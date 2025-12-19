@@ -31,7 +31,6 @@ for key in data:
     if name_col in data[key].columns:
         data[key][name_col] = data[key][name_col].astype(str).str.strip()
     if key in ['reg_traffic', 'reg_leads']:
-        # Ensure all column names are strings and stripped of hidden spaces
         data[key].columns = [str(col).strip() for col in data[key].columns]
 
 all_models = sorted(data['search']['model name'].dropna().unique().tolist())
@@ -51,7 +50,8 @@ all_selected = [main_model] + competitors
 
 st.title(f"Market Performance: {main_model}")
 
-mobile_config = {'displayModeBar': False, 'staticPlot': False}
+# CRITICAL FIX: Set staticPlot to True to disable ALL touch interactions for better mobile scrolling
+mobile_config = {'staticPlot': True}
 
 # --- 1. SOV TREND LINE CHART ---
 st.divider()
@@ -159,42 +159,28 @@ with col_a:
         fig_a.update_traces(textfont=dict(weight='bold', size=13))
         st.plotly_chart(fig_a, use_container_width=True, config=mobile_config, key="a_comp")
 
-# --- 4. GEOGRAPHIC PERFORMANCE (FIXED KEYERROR & CHANDIGARH ISSUE) ---
+# --- 4. GEOGRAPHIC PERFORMANCE ---
 st.divider()
 st.header("📍 Top 10 States Performance")
 
 def prepare_geo_plot(df_key, main_m, comp_list, title, baseline_states=None):
     df = data[df_key]
     m_col = 'model name' if 'model name' in df.columns else 'Model Name'
-    
-    # Identify state columns excluding model name and other technical columns
     state_cols = [c for c in df.columns if c not in [m_col, 'Unnamed: 0', 'total', 'Total']]
-    
-    # Extract row for main model
     main_row = df[df[m_col] == main_m]
-    
     if baseline_states is None:
-        # Determine Top 10 based on this specific sheet if no baseline is provided
         if not main_row.empty:
             vals = main_row[state_cols].iloc[0]
-            # Filter out zero values to avoid "Chandigarh" issues if it has 0 traffic
             sel_states = vals[vals > 0].sort_values(ascending=True).tail(10).index.tolist()
-        else:
-            sel_states = []
-    else: 
-        # Use baseline states but reverse for top-to-bottom bar chart
-        sel_states = baseline_states[::-1]
-        
+        else: sel_states = []
+    else: sel_states = baseline_states[::-1]
     plot_data = []
-    # Calculate percentages
     if not main_row.empty:
         m_total = main_row[state_cols].sum(axis=1).values[0]
         for s in sel_states:
-            # Check if state exists in this specific sheet (fixes Ladakh KeyError)
             val = main_row[s].values[0] if s in main_row.columns else 0
             pct = (val / m_total * 100) if m_total > 0 else 0
             plot_data.append({"State": s, "Entity": main_m, "Val": pct})
-    
     comp_rows = df[df[m_col].isin(comp_list)]
     if not comp_rows.empty:
         avg_profile = comp_rows[state_cols].mean()
@@ -203,10 +189,9 @@ def prepare_geo_plot(df_key, main_m, comp_list, title, baseline_states=None):
             val = avg_profile[s] if s in avg_profile.index else 0
             pct = (val / avg_total * 100) if avg_total > 0 else 0
             plot_data.append({"State": s, "Entity": "Comp Avg", "Val": pct})
-    
     if plot_data:
-        fig = px.bar(pd.DataFrame(plot_data), y="State", x="Val", color="Entity", 
-                     barmode="group", text_auto='.1f', title=title, orientation='h')
+        fig = px.bar(pd.DataFrame(plot_data), y="State", x="Val", color="Entity", barmode="group", text_auto='.1f', title=title, orientation='h')
+        fig.update_layout(bar_layout, height=450)
         fig.update_traces(textfont=dict(weight='bold', size=12))
         return fig, sel_states[::-1]
     return None, []
@@ -214,28 +199,39 @@ def prepare_geo_plot(df_key, main_m, comp_list, title, baseline_states=None):
 geo_col1, geo_col2 = st.columns(2)
 fig_t, t_states = prepare_geo_plot('reg_traffic', main_model, competitors, "Traffic Contribution %")
 fig_l, _ = prepare_geo_plot('reg_leads', main_model, competitors, "Leads Contribution %", baseline_states=t_states)
-
-for f in [fig_t, fig_l]: 
-    if f: f.update_layout(bar_layout, height=450)
-
 with geo_col1:
     if fig_t: st.plotly_chart(fig_t, use_container_width=True, config=mobile_config, key="geo_t")
 with geo_col2:
     if fig_l: st.plotly_chart(fig_l, use_container_width=True, config=mobile_config, key="geo_l")
 
-# Geographic T2L Heatmap
+# Geographic T2L Heatmap (Flipped for Mobile Clarity)
 st.subheader("🎯 Geographic T2L % Heatmap")
 if t_states:
     m_col_geo = 'model name' if 'model name' in data['reg_traffic'].columns else 'Model Name'
-    # Safely select columns that exist in both sheets
+    # Ensure we only use states present in both datasets
     valid_states = [s for s in t_states if s in data['reg_traffic'].columns and s in data['reg_leads'].columns]
     
     if valid_states:
         t_sub = data['reg_traffic'][data['reg_traffic'][m_col_geo].isin(all_selected)].set_index(m_col_geo)[valid_states]
         l_sub = data['reg_leads'][data['reg_leads'][m_col_geo].isin(all_selected)].set_index(m_col_geo)[valid_states]
-        t2l_geo = (l_sub / t_sub * 100).fillna(0).reindex(all_selected)
+        
+        # Calculate T2L and Transpose so States are on the Y-axis (Rows)
+        t2l_geo = (l_sub / t_sub * 100).fillna(0).reindex(all_selected).T
 
-        fig_t2l = px.imshow(t2l_geo, text_auto=".2f", color_continuous_scale="RdYlGn", aspect="auto")
-        fig_t2l.update_layout(coloraxis_showscale=False, xaxis_title=None, yaxis_title=None, margin=dict(l=5, r=5, t=10, b=5), height=280)
-        fig_t2l.update_traces(textfont=dict(size=14, color="black", weight='bold'))
-        st.plotly_chart(fig_t2l, use_container_width=True, config=mobile_config, key="geo_t2l")
+        # Render with States on Y-axis for better mobile readability
+        fig_t2l = px.imshow(
+            t2l_geo, 
+            text_auto=".2f", 
+            color_continuous_scale="RdYlGn", 
+            aspect="auto",
+            labels=dict(x="Model", y="State", color="T2L %")
+        )
+        fig_t2l.update_layout(
+            coloraxis_showscale=False, 
+            xaxis_title=None, 
+            yaxis_title=None, 
+            margin=dict(l=5, r=5, t=10, b=5), 
+            height=400  # Increased height to accommodate state list
+        )
+        fig_t2l.update_traces(textfont=dict(size=12, color="black", weight='bold'))
+        st.plotly_chart(fig_t2l, use_container_width=True, config=mobile_config, key="geo_t2l_flipped")
